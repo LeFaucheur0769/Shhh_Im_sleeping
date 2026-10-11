@@ -155,9 +155,35 @@ hardware-modification risk, firmware as the real thermal safety net, conflicts
 with `fancontrol`/`auto-cpufreq`/TLP, SIGKILL leaving settings in place,
 performance impact of quiet mode, and config-file trust.
 
+### Live hardware fix: `-EBUSY` on Super I/O fan chips (v1.0.1)
+
+After deploying on the target machine (i5-13600KF, hwmon10 ≈ `nct6775`/`it87`
+family), journald showed `cannot write /sys/class/hwmon/hwmon10/pwm6:
+[Errno 16] Device or resource busy`. Root cause: the kernel hwmon ABI says
+writing `pwmN` while `pwmN_enable == 0` **may return -EBUSY**, and these
+Super I/O chips do exactly that — so the "duty first, then enable" order was
+refused every cycle.
+
+Fix in `FanTuner._go_manual()`:
+
+- Try duty-then-enable first (safe for drivers that allow it, and it keeps a
+  manual fan from ever sitting at duty 0).
+- On refusal, fall back to enable-first, then retry the duty; the fan keeps
+  its previous (validated non-zero) duty in the meantime.
+- If both orders fail, the fan is **dropped**: control is handed back to the
+  firmware (enable restored to `0` only if that was its original state), the
+  fan is removed from the control set with a one-time warning, and its
+  original values are no longer restored on exit.
+- `write_file()` gained a `log=True` parameter so the expected first-attempt
+  refusal logs at debug level instead of producing a false warning.
+
+Three new tests emulate the `-EBUSY` ABI with a fake hwmon tree: fallback
+order, already-manual fans keeping duty-then-enable order, and uncontrollable
+fans being dropped with firmware control left intact.
+
 ## 5. Testing
 
-- `tests/test_units.py` — **25 unit tests** (24 pass, 1 skipped on machines
+- `tests/test_units.py` — **28 unit tests** (27 pass, 1 skipped on machines
   without writable PWM fans):
   - `parse_hours()` (valid, empty/"off", invalid, out-of-range)
   - config defaults, sanitising/clamping, quiet-hours midnight wrap
@@ -169,6 +195,9 @@ performance impact of quiet mode, and config-file trust.
     `/sys/` rejected, pwm-named symlink escaping `/sys` rejected, real-sysfs
     path accepted when available, GPU-managed chips skipped by auto-discovery
     via a fake hwmon tree)
+  - `-EBUSY` fallback tests (`TestFanEbusyFallback`): enable-first retry on
+    chips that refuse duty writes in automatic mode, already-manual fans keep
+    duty-then-enable order, uncontrollable fans are dropped and left automatic
 - Two bugs were found **by the tests** and fixed:
   - `target_pwm()` applied the `min_fan_pwm` floor to the power-mode target `0`,
     turning "automatic" into manual duty 50.
@@ -196,6 +225,7 @@ performance impact of quiet mode, and config-file trust.
 | `4f65243` | Package split, all safety fixes, tests, deployment files, README |
 | `4be7393` | Fixes from the external code review (fan oscillation, startup fan mode, systemd ordering, `target_pwm()` restructure) |
 | `69f9c36` | Security audit: fan path validation, GPU-chip exclusion, threshold clamping, config-ownership warning, systemd hardening, security tests, README disclaimers |
+| `1633d58` | Live-hardware fix (v1.0.1): `-EBUSY` fallback on Super I/O fan chips, fan drop-out on uncontrollable fans, `write_file(log=False)`, 3 new tests |
 
 ## 8. Defaults preserved from the original
 
