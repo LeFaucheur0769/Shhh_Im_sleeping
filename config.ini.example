@@ -1,0 +1,67 @@
+# Shhh, I'm sleeping -- example configuration.
+# Copy to /etc/shhh-im-sleeping/config.ini (or config.ini next to main.py).
+# Every key is optional; the values below are the built-in defaults.
+
+[monitor]
+# How often to sample the system, in seconds.
+sample_seconds = 5
+
+[thresholds]
+# Average CPU busy percentage that counts as "somebody is using the machine".
+cpu_busy_percent = 35
+# 1-minute load average per core that counts as heavy work.
+load_factor = 0.75
+# Load must persist this many seconds before switching to power mode.
+power_on_seconds = 15
+# System must stay idle this many seconds before going back to quiet mode.
+quiet_after_seconds = 90
+
+[temperature]
+# Above this the daemon forces power mode and full fan speed.
+critical_celsius = 85
+# Temperature must drop below this before the temperature override releases.
+exit_celsius = 75
+# hwmon chip names to read as temperature sensors. Empty = accept every chip.
+sensor_names = coretemp, k10temp, cpu_thermal, acpitz
+
+[quiet]
+governor = powersave
+# Cap CPU frequency in quiet mode, in kHz. 0 = no cap (hardware decides).
+max_freq_khz = 0
+# Disable turbo boost in quiet mode (intel_pstate only).
+no_turbo = true
+
+[power]
+governor = performance
+no_turbo = false
+
+[fans]
+# "auto" discovers spinning fans under /sys/class/hwmon, or give a
+# comma-separated list of explicit pwm files, e.g.
+# paths = /sys/class/hwmon/hwmon2/pwm1, /sys/class/hwmon/hwmon2/pwm2
+paths = auto
+# Fan duty in quiet mode (1..255). 0 = leave fans on automatic control.
+quiet_pwm = 76
+# Fan duty in power mode. 0 = automatic (BIOS decides), the safe default.
+power_pwm = 0
+# Manual fans are never set below this duty, so they cannot stall.
+min_pwm = 50
+# In quiet mode, start ramping fans up at this temperature...
+ramp_celsius = 70
+# ...to this duty (full speed is used above critical_celsius).
+ramp_pwm = 180
+
+[processes]
+# Regexes matched against process names; a match counts as heavy work.
+# patterns = ffmpeg, x264, blender, qemu
+# Processes matching these never trigger power mode on their own.
+# Docker housekeeping is ignored by default; container workloads still count.
+ignore_patterns = dockerd, containerd, docker-proxy, containerd-shim.*
+
+[schedule]
+# During quiet hours the machine stays quiet unless load is extreme.
+enabled = false
+# 24h window, wraps around midnight.
+quiet_hours = 23:00-07:00
+# Load per core that overrides quiet hours.
+hard_load_per_core = 2.0

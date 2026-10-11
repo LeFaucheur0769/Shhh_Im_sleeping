@@ -1,0 +1,19 @@
+[Unit]
+Description=Shhh, I'm sleeping - adaptive quiet/power mode daemon
+After=multi-user.target
+# Never let a crash loop hammer the machine: back off between restarts.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/shhh-im-sleeping/main.py
+WorkingDirectory=/opt/shhh-im-sleeping
+Environment=PYTHONUNBUFFERED=1
+# SIGTERM so the daemon restores the original CPU/fan settings on stop.
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

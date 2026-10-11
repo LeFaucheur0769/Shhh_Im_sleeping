@@ -1,2 +1,107 @@
-# Shhh_Im_sleeping
-100% vibecoded
+# Shhh, I'm sleeping
+
+A small Python daemon for Linux that keeps your machine **quiet when idle** and
+switches to **full power when you're actually working**.
+
+It watches CPU utilisation, load average and temperatures, then tunes:
+
+- CPU frequency governors (`powersave` ↔ `performance`)
+- CPU frequency caps and Intel Turbo Boost
+- Chassis/CPU fan speeds through hwmon PWM files
+
+It never kills or renices processes — it only writes to `/sys`.
+
+## How it works
+
+| Signal | Quiet mode | Power mode |
+|---|---|---|
+| CPU busy % or load average | below thresholds for a while | above thresholds for `power_on_seconds` |
+| Temperature | normal | ramps fans up before the critical threshold |
+| Quiet hours (optional) | forces quiet mode in the window | — |
+
+Hysteresis prevents flapping: the machine must stay busy for `power_on_seconds`
+before switching up, and idle for `power_off_seconds` before switching down.
+
+## Requirements
+
+- Linux with `sysfs` (`/sys/class/hwmon`, `/sys/devices/system/cpu`)
+- Python 3.8+ (stdlib only, no dependencies)
+- root (the daemon only writes to `/sys`; run it as a systemd service)
+
+## Install
+
+```bash
+sudo ./install.sh
+```
+
+This copies the code to `/opt/shhh-im-sleeping`, creates
+`/etc/shhh-im-sleeping/config.ini` from the example (only on first install),
+and enables the `shhh-im-sleeping` systemd service.
+
+Try it first without changing anything:
+
+```bash
+python3 main.py --test      # read-only self test: sensors, governors, fans
+python3 main.py --dry-run   # run the daemon, log decisions, write nothing
+```
+
+## Configuration
+
+See [`config.ini.example`](config.ini.example) for every option with defaults.
+The service reads `/etc/shhh-im-sleeping/config.ini`.
+
+Key options:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `cpu_busy_percent` | 35 | CPU busy % that counts as "working" |
+| `load_factor` | 0.75 | load1 per core that also counts as "working" |
+| `power_on_seconds` | 15 | how long it must look busy before switching up |
+| `critical_celsius` | 85 | fans forced to full speed above this |
+| `quiet_fan_pwm` | 76 | fan duty in quiet mode (0 = keep automatic) |
+| `power_fan_pwm` | 0 | 0 = hand fans back to the firmware's automatic control |
+| `quiet_max_freq_khz` | 0 | 0 = never touch your own frequency cap |
+| `quiet_hours` | 23:00-07:00 | optional window that forces quiet mode |
+
+### Docker
+
+The daemon ignores Docker housekeeping processes (`dockerd`, `containerd`,
+`docker-proxy`, `containerd-shim`) so container management doesn't flip the
+machine into power mode. CPU used **inside** containers still counts as real
+load — configure `ignore_patterns` in `[monitor]` if you want different rules.
+
+## Safety design
+
+- **Fans**: manual control is only enabled after the duty is set, and control
+  is handed back to the firmware by writing `0` to `pwm_enable` (writing `0` to
+  `pwm` in manual mode would *stop* the fan). A `min_fan_pwm` floor prevents
+  stalls, a graduated ramp starts at 70 °C, and 85 °C forces full speed.
+- **No temperature sensors?** Manual fan control is disabled entirely.
+- **Sensor failure**: if temperature reads fail 3 times in a row while fans are
+  manual, they are returned to automatic control.
+- **Your settings are preserved**: original governor/frequency/fan values are
+  saved at startup and restored on exit (SIGTERM, crash, or uninstall).
+- **Frequency caps**: with `quiet_max_freq_khz = 0` the daemon never writes
+  `scaling_max_freq`, so a cap you set yourself is left alone.
+- The daemon only ever writes to `/sys`; it never kills processes.
+
+## Uninstall
+
+```bash
+sudo systemctl disable --now shhh-im-sleeping
+sudo rm /etc/systemd/system/shhh-im-sleeping.service
+sudo rm -rf /opt/shhh-im-sleeping
+```
+
+The service restores your original CPU/fan settings when it stops.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests   # unit tests (no sysfs needed)
+python3 main.py --test                  # live read-only self test
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
