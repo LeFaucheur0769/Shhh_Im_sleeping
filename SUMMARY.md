@@ -107,14 +107,68 @@ as `0644` (it is not executed directly), and README/config docs updated for the
 temperature-override latch (stays POWER if sensors die — the safe direction)
 and the noisy ACPI thermal-zone fallback (set `sensor_names` on laptops).
 
+### Security audit (hardware hazards + code security)
+
+A dedicated security pass over the whole codebase:
+
+**Hardware hazards**
+
+- **Fan path validation**: explicitly configured fan files must resolve (after
+  symlink resolution with `os.path.realpath`) to real files under `/sys/` — a
+  config or symlink trick can no longer point the root daemon at an arbitrary
+  file.
+- **GPU chips excluded from auto-discovery**: hwmon chips whose `name` is
+  `amdgpu`, `nvidia`, `radeon`, `nouveau`, `i915` or `xe` are skipped, so the
+  daemon never fights the graphics driver over GPU fan control.
+- **Temperature thresholds clamped** in `_sanitise()`: `critical_celsius` to
+  [40, 110], `exit_celsius` to [30, 110] (and `exit >= critical` pulls it to
+  `critical - 10`), `fan_ramp_celsius >= 30`. A bad config can no longer
+  produce a daemon that never ramps fans or ramps constantly.
+
+**Code security**
+
+- Grep audit for `eval`, `exec`, `subprocess`, `os.system`, `shell=True`,
+  `__import__`, `pickle`, `input(` — **no matches**: the daemon contains no
+  dangerous primitives, it only reads `/proc` + `/sys` and writes sysfs
+  attributes.
+- **Config-file trust**: the daemon runs as root and obeys its config file, so
+  `Config.load()` now warns when that file is not root-owned or is
+  group/world-writable.
+
+**Systemd hardening** (every directive chosen to stay compatible with the
+daemon's job of reading `/proc` and writing `/sys`):
+
+- Added: `NoNewPrivileges`, `PrivateTmp`, `PrivateDevices`,
+  `ProtectSystem=strict`, `ProtectHome`, `ProtectKernelModules`,
+  `ProtectKernelLogs`, `ProtectControlGroups`,
+  `RestrictAddressFamilies=AF_UNIX`, `RestrictNamespaces`, `RestrictSUIDSGID`,
+  `LockPersonality`, `SystemCallArchitectures=native`,
+  `Environment=PYTHONDONTWRITEBYTECODE=1` (the install dir becomes read-only).
+- Deliberately **not** used: `ProtectKernelTunables` (mounts `/sys` read-only,
+  the daemon could not work) and `ProcSubset=pid` (hides the `/proc` entries
+  the load monitor scans).
+- Validated by running the full selftest under `systemd-run --user` with the
+  complete hardening property set: `status=0/SUCCESS`.
+
+**Documentation**: a `Disclaimers` section was added to the README covering
+hardware-modification risk, firmware as the real thermal safety net, conflicts
+with `fancontrol`/`auto-cpufreq`/TLP, SIGKILL leaving settings in place,
+performance impact of quiet mode, and config-file trust.
+
 ## 5. Testing
 
-- `tests/test_units.py` — **19 unit tests**, all passing:
+- `tests/test_units.py` — **25 unit tests** (24 pass, 1 skipped on machines
+  without writable PWM fans):
   - `parse_hours()` (valid, empty/"off", invalid, out-of-range)
   - config defaults, sanitising/clamping, quiet-hours midnight wrap
   - `target_pwm()`: idle duty, ramp, floor, critical override, automatic (0),
     power-mode manual duty, power-mode ramp, critical override in power mode,
     automatic stays automatic at critical
+  - security tests: temperature thresholds clamped, world-writable config
+    triggers the ownership warning, `TestFanPathSafety` (explicit path outside
+    `/sys/` rejected, pwm-named symlink escaping `/sys` rejected, real-sysfs
+    path accepted when available, GPU-managed chips skipped by auto-discovery
+    via a fake hwmon tree)
 - Two bugs were found **by the tests** and fixed:
   - `target_pwm()` applied the `min_fan_pwm` floor to the power-mode target `0`,
     turning "automatic" into manual duty 50.
@@ -140,6 +194,8 @@ and the noisy ACPI thermal-zone fallback (set `sensor_names` on laptops).
 |---|---|
 | `fbd38f3` | Initial commit (`.gitignore`, `LICENSE`, placeholder README) |
 | `4f65243` | Package split, all safety fixes, tests, deployment files, README |
+| `4be7393` | Fixes from the external code review (fan oscillation, startup fan mode, systemd ordering, `target_pwm()` restructure) |
+| `69f9c36` | Security audit: fan path validation, GPU-chip exclusion, threshold clamping, config-ownership warning, systemd hardening, security tests, README disclaimers |
 
 ## 8. Defaults preserved from the original
 
