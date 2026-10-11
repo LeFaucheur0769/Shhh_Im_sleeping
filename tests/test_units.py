@@ -115,6 +115,24 @@ class TestTargetPwm(unittest.TestCase):
     def test_missing_temperature_falls_back_to_quiet_pwm(self):
         self.assertEqual(target_pwm(QUIET, None, self.cfg), self.cfg.quiet_fan_pwm)
 
+    def test_power_mode_manual_duty(self):
+        self.cfg.power_fan_pwm = 100
+        self.assertEqual(target_pwm(POWER, 40.0, self.cfg), 100)
+
+    def test_power_mode_automatic_stays_automatic_when_hot(self):
+        hot = self.cfg.critical_celsius + 5
+        self.assertEqual(target_pwm(POWER, hot, self.cfg), 0)
+
+    def test_critical_override_applies_in_power_mode(self):
+        self.cfg.power_fan_pwm = 100
+        hot = self.cfg.critical_celsius + 5
+        self.assertEqual(target_pwm(POWER, hot, self.cfg), 255)
+
+    def test_power_mode_ramps_too(self):
+        self.cfg.power_fan_pwm = 100
+        mid = self.cfg.fan_ramp_celsius + 5
+        self.assertEqual(target_pwm(POWER, mid, self.cfg), self.cfg.fan_ramp_pwm)
+
 
 if __name__ == "__main__":
     unittest.main()

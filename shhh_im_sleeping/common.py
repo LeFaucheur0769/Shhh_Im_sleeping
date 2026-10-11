@@ -37,16 +37,6 @@ def read_int(path, default=None):
         return default
 
 
-def read_float(path, default=None):
-    raw = read_file(path)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
-
-
 def write_file(path, value, dry_run=False):
     """Write *value* to a (usually sysfs) file.  Never raises."""
     if dry_run:

@@ -22,6 +22,9 @@ critical_celsius = 85
 # Temperature must drop below this before the temperature override releases.
 exit_celsius = 75
 # hwmon chip names to read as temperature sensors. Empty = accept every chip.
+# Note: when no known CPU chip is found the daemon falls back to ACPI thermal
+# zones, which on laptops often track noisy zones (iwlwifi, GPU, adapter).
+# Set this list explicitly if the fallback temperature looks wrong.
 sensor_names = coretemp, k10temp, cpu_thermal, acpitz
 
 [quiet]
@@ -46,9 +49,11 @@ quiet_pwm = 76
 power_pwm = 0
 # Manual fans are never set below this duty, so they cannot stall.
 min_pwm = 50
-# In quiet mode, start ramping fans up at this temperature...
+# For manual fans (quiet_pwm or power_pwm above 0), start ramping at this
+# temperature in either mode...
 ramp_celsius = 70
-# ...to this duty (full speed is used above critical_celsius).
+# ...to this duty (full speed 255 is used at or above critical_celsius).
+# Fans left on automatic control are never touched by the ramp.
 ramp_pwm = 180
 
 [processes]

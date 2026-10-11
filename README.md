@@ -16,7 +16,7 @@ It never kills or renices processes — it only writes to `/sys`.
 | Signal | Quiet mode | Power mode |
 |---|---|---|
 | CPU busy % or load average | below thresholds for a while | above thresholds for `power_on_seconds` |
-| Temperature | normal | ramps fans up before the critical threshold |
+| Temperature | ramps manual fans before the critical threshold | forced by `critical_celsius`, released below `exit_celsius` |
 | Quiet hours (optional) | forces quiet mode in the window | — |
 
 Hysteresis prevents flapping: the machine must stay busy for `power_on_seconds`
@@ -50,6 +50,12 @@ python3 main.py --dry-run   # run the daemon, log decisions, write nothing
 See [`config.ini.example`](config.ini.example) for every option with defaults.
 The service reads `/etc/shhh-im-sleeping/config.ini`.
 
+Note on temperature sensors: the daemon prefers known CPU chips (`coretemp`,
+`k10temp`, ...).  If none is found it falls back to ACPI thermal zones, which on
+laptops often track noisy zones (`iwlwifi`, GPU, power adapter) and can report
+odd temperatures — set `sensor_names` explicitly if the reported temperature
+looks wrong.
+
 Key options:
 
 | Option | Default | Meaning |
@@ -77,8 +83,13 @@ load — configure `ignore_patterns` in `[monitor]` if you want different rules.
   `pwm` in manual mode would *stop* the fan). A `min_fan_pwm` floor prevents
   stalls, a graduated ramp starts at 70 °C, and 85 °C forces full speed.
 - **No temperature sensors?** Manual fan control is disabled entirely.
-- **Sensor failure**: if temperature reads fail 3 times in a row while fans are
-  manual, they are returned to automatic control.
+- **Sensor failure**: once temperature reads fail `MAX_TEMP_MISSES` (3) times in
+  a row, fans stay on automatic control until the sensors recover — the daemon
+  never flips back to blind manual control.
+- **Temperature override latch**: if the daemon is holding power mode because of
+  a critical temperature and the sensors then go unreadable, it *stays* in power
+  mode until a fresh reading drops below `exit_celsius`.  Staying in power mode
+  is the safe direction when the thermometer is blind.
 - **Your settings are preserved**: original governor/frequency/fan values are
   saved at startup and restored on exit (SIGTERM, crash, or uninstall).
 - **Frequency caps**: with `quiet_max_freq_khz = 0` the daemon never writes

@@ -23,19 +23,16 @@ PWM_NAME_RE = re.compile(r"^pwm\d+$")
 
 def target_pwm(mode, temp, cfg):
     """Fan duty for one cycle.  0 means 'hand control back to automatic'."""
-    if mode == POWER:
-        target = cfg.power_fan_pwm  # 0 == automatic, the safe default
-        if target <= 0:
-            return 0  # never let the stall floor turn automatic into manual
-    else:
-        target = cfg.quiet_fan_pwm
-        if target <= 0:
-            return 0  # user asked for automatic fans even in quiet mode
-        if temp is not None:
-            if temp >= cfg.fan_ramp_celsius:
-                target = max(target, cfg.fan_ramp_pwm)
-            if temp >= cfg.critical_celsius:
-                target = 255  # critical override, full speed
+    target = cfg.power_fan_pwm if mode == POWER else cfg.quiet_fan_pwm
+    if target <= 0:
+        # Automatic: the firmware handles temperature itself, including
+        # critical temperatures, so never turn this into a manual duty.
+        return 0
+    if temp is not None:
+        if temp >= cfg.critical_celsius:
+            return 255  # critical override applies in both modes
+        if temp >= cfg.fan_ramp_celsius:
+            target = max(target, cfg.fan_ramp_pwm)
     return max(cfg.min_fan_pwm, min(255, int(target)))
 
 

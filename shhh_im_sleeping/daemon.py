@@ -27,6 +27,7 @@ class Daemon:
         self.power_hits = 0
         self.quiet_hits = 0
         self._last_temp = None
+        self._fans_blinded = False
         self._stop = threading.Event()
 
     # -- plumbing ---------------------------------------------------------- #
@@ -48,18 +49,27 @@ class Daemon:
 
         CPU tuning only happens on mode switches, but fans must react to
         temperature continuously even while the mode stays quiet.
+
+        Manual control is allowed only while the sensors are trusted: once
+        consecutive read failures pass MAX_TEMP_MISSES, the fans stay on
+        automatic control until the sensors recover -- regardless of what
+        the previous cycle's target was.  (Consulting the previous target
+        here would let the daemon flip back to blind manual control every
+        other cycle.)
         """
-        allow_manual = bool(self.monitor.sensors)
-        if not allow_manual and self.fans.pwms:
+        sensors_ok = bool(self.monitor.sensors)
+        blinded = sensors_ok and self.monitor.temp_misses >= MAX_TEMP_MISSES
+        if blinded and self.fans.pwms and not self._fans_blinded:
+            LOG.warning("temperature unreadable for %d cycles -- keeping fans "
+                        "on automatic control until sensors recover",
+                        self.monitor.temp_misses)
+            self._fans_blinded = True
+        elif not blinded:
+            self._fans_blinded = False
+        if not sensors_ok and self.fans.pwms:
             LOG.debug("no temperature sensors: keeping fans on automatic control")
-        if (self.fans._last_target and self.fans._last_target > 0
-                and sample["temp"] is None
-                and self.monitor.temp_misses >= MAX_TEMP_MISSES):
-            LOG.warning("temperature unreadable for %d cycles -- returning fans "
-                        "to automatic control", self.monitor.temp_misses)
-            allow_manual = False
         self.fans.apply(self.mode or QUIET, self.cfg,
-                        temp=sample["temp"], allow_manual=allow_manual)
+                        temp=sample["temp"], allow_manual=sensors_ok and not blinded)
 
     # -- decision logic ---------------------------------------------------- #
 
@@ -118,7 +128,8 @@ class Daemon:
 
         # Start quiet: the whole point of the service.
         self.cpu.apply(QUIET, cfg)
-        self.fans.apply(QUIET, cfg, temp=None)
+        self.fans.apply(QUIET, cfg, temp=None,
+                        allow_manual=bool(self.monitor.sensors))
         self.mode = QUIET
 
         try:

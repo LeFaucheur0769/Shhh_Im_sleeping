@@ -14,7 +14,7 @@ fi
 
 echo "Installing to $PREFIX ..."
 install -d "$PREFIX"
-install -m 0755 "$REPO_DIR/main.py" "$PREFIX/main.py"
+install -m 0644 "$REPO_DIR/main.py" "$PREFIX/main.py"
 install -d "$PREFIX/shhh_im_sleeping"
 install -m 0644 "$REPO_DIR"/shhh_im_sleeping/*.py "$PREFIX/shhh_im_sleeping/"
 
