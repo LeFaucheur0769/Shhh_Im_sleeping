@@ -4,15 +4,18 @@ Run with:  python3 -m unittest discover -s tests
 """
 
 import datetime
+import glob
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shhh_im_sleeping.common import POWER, QUIET, parse_hours
 from shhh_im_sleeping.config import Config
-from shhh_im_sleeping.fan_tuner import target_pwm
+from shhh_im_sleeping import fan_tuner
+from shhh_im_sleeping.fan_tuner import FanTuner, target_pwm
 
 
 class TestParseHours(unittest.TestCase):
@@ -59,13 +62,46 @@ class TestConfig(unittest.TestCase):
         self.assertGreaterEqual(cfg.min_fan_pwm, 1)
 
     def test_load_from_file(self):
-        import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".ini", delete=False) as fh:
             fh.write("[thresholds]\ncpu_busy_percent = 50\n")
             path = fh.name
         try:
-            cfg = Config.load(path)
+            # assertLogs also swallows the "not root-owned" warning that a
+            # temp file necessarily triggers in a test environment.
+            with self.assertLogs("shhh-im-sleeping", level="WARNING"):
+                cfg = Config.load(path)
             self.assertEqual(cfg.cpu_busy_percent, 50)
+        finally:
+            os.unlink(path)
+
+    def test_temperature_thresholds_are_clamped(self):
+        cfg = Config()
+        cfg.critical_celsius = 5000.0
+        cfg.exit_celsius = 4990.0
+        cfg._sanitise()
+        self.assertLessEqual(cfg.critical_celsius, 110.0)
+        self.assertLess(cfg.exit_celsius, cfg.critical_celsius)
+
+        cfg = Config()
+        cfg.critical_celsius = -20.0
+        cfg._sanitise()
+        self.assertGreaterEqual(cfg.critical_celsius, 40.0)
+        self.assertLess(cfg.exit_celsius, cfg.critical_celsius)
+
+        cfg = Config()
+        cfg.fan_ramp_celsius = 5.0
+        cfg._sanitise()
+        self.assertGreaterEqual(cfg.fan_ramp_celsius, 30.0)
+
+    def test_world_writable_config_warns(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".ini", delete=False) as fh:
+            fh.write("[monitor]\nsample_seconds = 5\n")
+            path = fh.name
+        try:
+            os.chmod(path, 0o666)
+            with self.assertLogs("shhh-im-sleeping", level="WARNING") as captured:
+                Config.load(path)
+            self.assertTrue(any("root-owned" in message for message in captured.output))
         finally:
             os.unlink(path)
 
@@ -132,6 +168,68 @@ class TestTargetPwm(unittest.TestCase):
         self.cfg.power_fan_pwm = 100
         mid = self.cfg.fan_ramp_celsius + 5
         self.assertEqual(target_pwm(POWER, mid, self.cfg), self.cfg.fan_ramp_pwm)
+
+
+class TestFanPathSafety(unittest.TestCase):
+    """Explicit fan paths must never become an arbitrary-file writer."""
+
+    def _cfg(self, paths):
+        cfg = Config()
+        cfg.fan_paths = paths
+        return cfg
+
+    def test_explicit_path_outside_sysfs_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = os.path.join(tmp, "pwm1")
+            with open(fake, "w") as fh:
+                fh.write("128")
+            with self.assertLogs("shhh-im-sleeping", level="WARNING"):
+                found = FanTuner._resolve_paths(self._cfg(fake))
+            self.assertEqual(found, [])
+
+    def test_symlink_outside_sysfs_rejected(self):
+        # A pwm-named symlink whose target escapes /sys must be rejected.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "real_file")
+            with open(target, "w") as fh:
+                fh.write("0")
+            link = os.path.join(tmp, "pwm1")
+            os.symlink(target, link)
+            with self.assertLogs("shhh-im-sleeping", level="WARNING"):
+                found = FanTuner._resolve_paths(self._cfg(link))
+            self.assertEqual(found, [])
+
+    @unittest.skipUnless(
+        any(glob.glob("/sys/class/hwmon/hwmon*/pwm[0-9]")
+            or glob.glob("/sys/class/hwmon/hwmon*/pwm[0-9][0-9]")),
+        "no plain pwmN sysfs file on this machine",
+    )
+    def test_real_sysfs_path_accepted(self):
+        for path in glob.glob("/sys/class/hwmon/hwmon*/pwm*"):
+            import re
+            if re.match(r"^pwm\d+$", os.path.basename(path)):
+                self.assertIn(path, FanTuner._resolve_paths(self._cfg(path)))
+                return
+
+    def test_auto_discovery_skips_driver_managed_gpu_chips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gpu = os.path.join(tmp, "hwmon1")
+            mobo = os.path.join(tmp, "hwmon2")
+            for name, chip in ((gpu, "amdgpu"), (mobo, "nct6797")):
+                os.mkdir(name)
+                with open(os.path.join(name, "name"), "w") as fh:
+                    fh.write(chip + "\n")
+                with open(os.path.join(name, "pwm1"), "w") as fh:
+                    fh.write("128\n")
+                with open(os.path.join(name, "fan1_input"), "w") as fh:
+                    fh.write("1200\n")
+            old_root = fan_tuner.HWMON_ROOT
+            fan_tuner.HWMON_ROOT = tmp
+            try:
+                found = FanTuner._resolve_paths(self._cfg("auto"))
+            finally:
+                fan_tuner.HWMON_ROOT = old_root
+            self.assertEqual(found, [os.path.join(mobo, "pwm1")])
 
 
 if __name__ == "__main__":

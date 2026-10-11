@@ -11,10 +11,31 @@ Type=simple
 ExecStart=/usr/bin/python3 /opt/shhh-im-sleeping/main.py
 WorkingDirectory=/opt/shhh-im-sleeping
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
 # SIGTERM so the daemon restores the original CPU/fan settings on stop.
 KillSignal=SIGTERM
 Restart=on-failure
 RestartSec=10
+
+# Security hardening.  Every directive below is chosen to stay compatible
+# with the daemon's job (reading /proc and writing /sys attributes as root):
+#   * ProtectKernelTunables is deliberately NOT used: it would mount /sys
+#     read-only and make the daemon unable to do anything.
+#   * ProcSubset=pid is deliberately NOT used: it would hide the /proc
+#     process entries the load monitor scans.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

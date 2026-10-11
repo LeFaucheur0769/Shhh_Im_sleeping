@@ -26,6 +26,20 @@ DEFAULT_IGNORE_PATTERNS = [
 ]
 
 
+def _warn_if_config_is_writable_by_others(path):
+    """The daemon runs as root and obeys this file: warn if others can edit it."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return
+    if st.st_uid != 0 or (st.st_mode & 0o022):
+        LOG.warning(
+            "config file %s is owned by uid %d with mode %04o: this daemon runs "
+            "as root, so keep it root-owned and not group/world-writable",
+            path, st.st_uid, st.st_mode & 0o777,
+        )
+
+
 class Config:
     """Runtime configuration, loaded from an INI file (all keys optional)."""
 
@@ -85,6 +99,7 @@ class Config:
                 break
         if used:
             LOG.info("loaded configuration from %s", used)
+            _warn_if_config_is_writable_by_others(used)
         else:
             LOG.warning("no configuration file found, using built-in defaults")
         cfg._apply(parser)
@@ -159,8 +174,13 @@ class Config:
 
     def _sanitise(self):
         """Clamp values so a bad config file can never do something silly."""
+        # Temperature thresholds outside plausible silicon ranges would either
+        # never trigger or trigger constantly; clamp them to sane bounds.
+        self.critical_celsius = max(40.0, min(110.0, self.critical_celsius))
+        self.exit_celsius = max(30.0, min(110.0, self.exit_celsius))
         if self.exit_celsius >= self.critical_celsius:
             self.exit_celsius = self.critical_celsius - 10.0
+        self.fan_ramp_celsius = max(30.0, self.fan_ramp_celsius)
         self.sample_seconds = max(1.0, self.sample_seconds)
         self.power_on_seconds = max(1.0, self.power_on_seconds)
         self.quiet_after_seconds = max(1.0, self.quiet_after_seconds)

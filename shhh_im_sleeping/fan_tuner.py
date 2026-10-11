@@ -20,6 +20,11 @@ from .common import HWMON_ROOT, LOG, POWER, QUIET, read_file, read_int, write_fi
 
 PWM_NAME_RE = re.compile(r"^pwm\d+$")
 
+# Chips whose fans the GPU driver/firmware already manages with its own
+# curves.  Grabbing them would fight that control (and GPU fans often use a
+# different PWM scale), so auto-discovery never claims them.
+DRIVER_MANAGED_CHIPS = {"amdgpu", "nvidia", "radeon", "nouveau", "i915", "xe"}
+
 
 def target_pwm(mode, temp, cfg):
     """Fan duty for one cycle.  0 means 'hand control back to automatic'."""
@@ -64,7 +69,14 @@ class FanTuner:
                 if not PWM_NAME_RE.match(os.path.basename(path)):
                     LOG.warning("ignoring fan path %r: not a pwmN file", path)
                     continue
-                if not os.path.isfile(path):
+                # A config file is user-editable, so a hostile or mistaken
+                # entry must not turn this daemon into an arbitrary-file
+                # writer.  Only real sysfs paths are acceptable.
+                real = os.path.realpath(path)
+                if not real.startswith("/sys/"):
+                    LOG.warning("ignoring fan path %r: not inside /sys", path)
+                    continue
+                if not os.path.isfile(real):
                     LOG.warning("ignoring fan path %r: does not exist", path)
                     continue
                 paths.append(path)
@@ -72,6 +84,10 @@ class FanTuner:
 
         found = []
         for hwmon in sorted(glob.glob(os.path.join(HWMON_ROOT, "hwmon*"))):
+            chip = (read_file(os.path.join(hwmon, "name")) or "").strip().lower()
+            if chip in DRIVER_MANAGED_CHIPS:
+                LOG.debug("skipping chip %s at %s: driver-managed fan", chip, hwmon)
+                continue
             for pwm in sorted(glob.glob(os.path.join(hwmon, "pwm*"))):
                 base = os.path.basename(pwm)
                 # pwm1_channel, pwm1_label etc. are metadata, not controls.

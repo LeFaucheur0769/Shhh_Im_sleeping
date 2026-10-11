@@ -11,6 +11,10 @@ It watches CPU utilisation, load average and temperatures, then tunes:
 
 It never kills or renices processes — it only writes to `/sys`.
 
+> **⚠️ This tool modifies hardware behaviour (fan speeds, CPU power limits).**
+> Read the [disclaimers](#disclaimers) before installing, and try
+> `python3 main.py --test` and `--dry-run` first.
+
 ## How it works
 
 | Signal | Quiet mode | Power mode |
@@ -95,6 +99,48 @@ load — configure `ignore_patterns` in `[monitor]` if you want different rules.
 - **Frequency caps**: with `quiet_max_freq_khz = 0` the daemon never writes
   `scaling_max_freq`, so a cap you set yourself is left alone.
 - The daemon only ever writes to `/sys`; it never kills processes.
+- **Systemd sandbox**: the service runs with `NoNewPrivileges`, `ProtectSystem`,
+  `PrivateDevices`, `ProtectKernelModules` and related hardening, so a compromised
+  daemon could not load kernel modules or escape to the wider system.
+- **Fan paths are validated**: configured fan files must resolve (after symlink
+  resolution) to real files under `/sys/`, and auto-discovery never touches
+  GPU fan chips (`amdgpu`, `nvidia`, `radeon`, `nouveau`, `i915`, `xe`) that the
+  graphics driver already manages.
+
+## Disclaimers
+
+- **Use at your own risk.** Writing to fan and CPU sysfs files changes how your
+  hardware behaves. Wrong settings can mean an under-cooled or over-noisy
+  machine. The author(s) accept no liability for damage, data loss or lost
+  uptime caused by using this software.
+- **Your firmware is still the real safety net.** BIOS/UEFI and kernel drivers
+  do the actual thermal emergency management (forced full fans, throttling,
+  shutdown). This daemon is a comfort tuner, not a cooling system — do **not**
+  disable `fancontrol`, `thermald` or vendor thermal services to "make room"
+  for it unless you know exactly what you are doing.
+- **Test before you run it as a service.** `python3 main.py --test` shows what
+  sensors, governors and fans the daemon sees; `--dry-run` makes it take every
+  decision without writing anything. Watch a full quiet/power cycle before
+  trusting it unattended.
+- **Fan control is machine-specific.** Many laptops expose no writable PWM fans
+  at all (the daemon then disables fan tuning by itself). Where fans *are*
+  writable, a too-low `min_fan_pwm` or a wrong `quiet_fan_pwm` can make the
+  machine hot — start with `quiet_fan_pwm = 0` (keep automatic control).
+- **Conflicts with other tuners.** Do not run this alongside `fancontrol`,
+  `auto-cpufreq`, TLP, `powertop --auto-tune` or vendor tools that write the
+  same sysfs files; they will fight each other. Pick one tuner per file.
+- **A hard kill leaves settings in place.** The daemon restores your original
+  settings on SIGTERM, SIGINT and crashes — but `kill -9` (SIGKILL) or a power
+  loss cannot be handled: your governors/fans stay as last written until the
+  daemon runs again or you reboot.
+- **Quiet mode reduces performance.** Expect slower builds, compiles and
+  latency-sensitive workloads until the load thresholds are crossed. Not
+  recommended on servers or workstations with deterministic performance needs.
+- **The config file is trusted input.** The daemon runs as root and obeys
+  `/etc/shhh-im-sleeping/config.ini`; keep it root-owned and not
+  group/world-writable (the daemon warns if it is not).
+- **Not a security tool.** It reads `/proc` and `/sys` for load and temperature
+  only; it does not sandbox, monitor or protect your processes.
 
 ## Uninstall
 
