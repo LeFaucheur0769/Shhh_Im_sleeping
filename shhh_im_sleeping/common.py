@@ -37,8 +37,14 @@ def read_int(path, default=None):
         return default
 
 
-def write_file(path, value, dry_run=False):
-    """Write *value* to a (usually sysfs) file.  Never raises."""
+def write_file(path, value, dry_run=False, log=True):
+    """Write *value* to a (usually sysfs) file.  Never raises.
+
+    ``log=False`` records the failure at debug level instead of warning
+    level; callers use it for expected failures that they retry another
+    way (e.g. a duty write refused with -EBUSY while the fan is still in
+    automatic mode).
+    """
     if dry_run:
         LOG.info("[dry-run] %s <- %s", path, value)
         return True
@@ -47,7 +53,10 @@ def write_file(path, value, dry_run=False):
             fh.write(str(value))
         return True
     except OSError as exc:
-        LOG.warning("cannot write %s: %s", path, exc)
+        if log:
+            LOG.warning("cannot write %s: %s", path, exc)
+        else:
+            LOG.debug("cannot write %s: %s", path, exc)
         return False
 
 

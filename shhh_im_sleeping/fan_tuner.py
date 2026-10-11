@@ -6,8 +6,14 @@ hwmon sysfs ABI notes (the reason for the careful ordering here):
 * ``pwmN`` is only meaningful in manual mode; writing 0 to it in manual
   mode *stops the fan*, it does NOT hand control back.  Control returns to
   the firmware by writing 0 to ``pwmN_enable``.
-* Therefore: to go manual, set the duty first, then enable.  To go back to
+* Therefore: to go manual, prefer setting the duty first, then enable, so a
+  manual fan is never left at duty 0 even for an instant.  To go back to
   automatic, just clear the enable flag.
+* The ABI also warns that drivers may return -EBUSY for ``pwmN`` writes
+  while ``pwmN_enable`` is 0 (nct6775/it87-family Super I/O chips do).  For
+  those, duty-then-enable is impossible, so ``apply()`` falls back to
+  enable-then-duty, and a fan that refuses both is dropped with firmware
+  control left intact.
 """
 
 from __future__ import annotations
@@ -116,7 +122,7 @@ class FanTuner:
             return  # nothing changed, don't hammer sysfs
         self._last_target = target
 
-        for pwm in self.pwms:
+        for pwm in list(self.pwms):  # copy: _go_manual() may drop entries
             enable_path = pwm + "_enable"
             self._original_pwm.setdefault(pwm, read_file(pwm))
             self._original_enable.setdefault(enable_path, read_file(enable_path))
@@ -126,10 +132,33 @@ class FanTuner:
                 # which in manual mode stops the fan).
                 write_file(enable_path, 0, self.dry_run)
             else:
-                # Duty first, then switch to manual: never leave a manual
-                # fan with a 0 duty, even for an instant.
-                write_file(pwm, target, self.dry_run)
-                write_file(enable_path, 1, self.dry_run)
+                self._go_manual(pwm, enable_path, target)
+
+    def _go_manual(self, pwm, enable_path, target):
+        """Switch one fan to manual mode at *target* duty."""
+        # Preferred order: duty first, then enable, so a manual fan is never
+        # left at duty 0, even for an instant.
+        if write_file(pwm, target, self.dry_run, log=False):
+            write_file(enable_path, 1, self.dry_run)
+            return True
+        # nct6775/it87-family chips follow the hwmon ABI note "writing to
+        # pwmN while pwmN_enable is 0 may return -EBUSY", so the duty write
+        # above is refused while the fan is still firmware-controlled.
+        # Fall back to enable first; the fan keeps its previous (non-zero,
+        # validated at discovery) duty in the meantime.
+        LOG.debug("duty write to %s refused, switching to manual mode first", pwm)
+        if write_file(enable_path, 1, self.dry_run, log=False) and \
+                write_file(pwm, target, self.dry_run):
+            return True
+        # Uncontrollable fan: hand control back to the firmware (only if we
+        # were the ones who took it away) and stop retrying it every cycle.
+        if self._original_enable.get(enable_path) == "0":
+            write_file(enable_path, 0, self.dry_run, log=False)
+        self._original_pwm.pop(pwm, None)
+        self._original_enable.pop(enable_path, None)
+        self.pwms.remove(pwm)
+        LOG.warning("fan %s refused control; dropped it, firmware keeps control", pwm)
+        return False
 
     def restore(self):
         """Put every fan exactly back the way it was found."""

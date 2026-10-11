@@ -82,8 +82,12 @@ load — configure `ignore_patterns` in `[monitor]` if you want different rules.
 
 ## Safety design
 
-- **Fans**: manual control is only enabled after the duty is set, and control
-  is handed back to the firmware by writing `0` to `pwm_enable` (writing `0` to
+- **Fans**: manual control is enabled after the duty is set; on chips that
+  refuse duty writes while the fan is still firmware-controlled (the hwmon
+  `-EBUSY` rule followed by `nct6775`/`it87`-family Super I/O chips), the
+  daemon switches to manual mode first and retries the duty. A fan that
+  refuses both orders is dropped and left under firmware control. Control is
+  handed back to the firmware by writing `0` to `pwm_enable` (writing `0` to
   `pwm` in manual mode would *stop* the fan). A `min_fan_pwm` floor prevents
   stalls, a graduated ramp starts at 70 °C, and 85 °C forces full speed.
 - **No temperature sensors?** Manual fan control is disabled entirely.

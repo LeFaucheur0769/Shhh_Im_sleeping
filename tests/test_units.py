@@ -232,5 +232,96 @@ class TestFanPathSafety(unittest.TestCase):
             self.assertEqual(found, [os.path.join(mobo, "pwm1")])
 
 
+class TestFanEbusyFallback(unittest.TestCase):
+    """nct6775/it87-family drivers refuse duty writes while a fan is still
+    in automatic mode (hwmon ABI: -EBUSY when pwmN_enable is 0)."""
+
+    def _fake_hwmon(self, tmp, enable="0"):
+        hwmon = os.path.join(tmp, "hwmon3")
+        os.mkdir(hwmon)
+        files = {
+            "name": "nct6775\n",
+            "pwm6": "128\n",
+            "fan6_input": "1200\n",
+            "pwm6_enable": enable + "\n",
+        }
+        for name, value in files.items():
+            with open(os.path.join(hwmon, name), "w") as fh:
+                fh.write(value)
+        return os.path.join(hwmon, "pwm6")
+
+    def _fake_write(self, fail_duty=False):
+        """Emulate the hwmon ABI: duty writes fail while pwmN_enable is 0."""
+        calls = []
+
+        def fake_write(path, value, dry_run=False, log=True):
+            calls.append((os.path.basename(path), str(value)))
+            if os.path.basename(path).endswith("_enable"):
+                with open(path, "w") as fh:
+                    fh.write(str(value))
+                return True
+            if fail_duty:
+                return False
+            with open(path + "_enable") as fh:
+                if fh.read().strip() == "0":
+                    return False  # -EBUSY, like nct6775
+            with open(path, "w") as fh:
+                fh.write(str(value))
+            return True
+
+        return fake_write, calls
+
+    def _run(self, tmp, pwm, fake_write):
+        cfg = Config()
+        cfg.fan_paths = "auto"
+        old_write, old_root = fan_tuner.write_file, fan_tuner.HWMON_ROOT
+        fan_tuner.write_file, fan_tuner.HWMON_ROOT = fake_write, tmp
+        try:
+            tuner = FanTuner(cfg)
+            tuner.apply(QUIET, cfg, 40.0)
+        finally:
+            fan_tuner.write_file, fan_tuner.HWMON_ROOT = old_write, old_root
+        return tuner
+
+    def _read(self, path):
+        with open(path) as fh:
+            return fh.read().strip()
+
+    def test_duty_refused_while_automatic_falls_back_to_enable_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pwm = self._fake_hwmon(tmp)
+            fake_write, calls = self._fake_write()
+            tuner = self._run(tmp, pwm, fake_write)
+            # duty attempt, then enable=1, then duty again (the retry works)
+            self.assertEqual(calls, [("pwm6", "76"), ("pwm6_enable", "1"),
+                                     ("pwm6", "76")])
+            self.assertEqual(self._read(pwm), "76")
+            self.assertEqual(self._read(pwm + "_enable"), "1")
+            self.assertEqual(tuner.pwms, [pwm])
+
+    def test_already_manual_fan_keeps_duty_then_enable_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pwm = self._fake_hwmon(tmp, enable="1")
+            fake_write, calls = self._fake_write()
+            self._run(tmp, pwm, fake_write)
+            self.assertEqual(calls, [("pwm6", "76"), ("pwm6_enable", "1")])
+            self.assertEqual(self._read(pwm), "76")
+
+    def test_uncontrollable_fan_is_dropped_and_left_automatic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pwm = self._fake_hwmon(tmp)
+            fake_write, calls = self._fake_write(fail_duty=True)
+            with self.assertLogs("shhh-im-sleeping", level="WARNING") as captured:
+                tuner = self._run(tmp, pwm, fake_write)
+            self.assertTrue(any("dropped" in message for message in captured.output))
+            self.assertEqual(tuner.pwms, [])
+            # firmware control handed back, duty untouched, nothing restored later
+            self.assertEqual(self._read(pwm), "128")
+            self.assertEqual(self._read(pwm + "_enable"), "0")
+            calls.clear()
+            tuner.restore()
+            self.assertEqual(calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()
